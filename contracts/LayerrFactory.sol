@@ -2,47 +2,26 @@
 pragma solidity >=0.8.0 <0.9.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-
-interface ILayerr1155 {
-  function initialize(
-    string memory _name,
-    string memory _symbol,
-    string memory _contractURI,
-    uint96 pct,
-    address royaltyReciever,
-    address _LayerrXYZ,
-    bool subscribeOpensea
-  ) external;
-}
-
-interface ILayerr721 {
-  function initialize(
-    string memory _name,
-    string memory _symbol,
-    string memory _contractURI,
-    uint96 pct,
-    address royaltyReciever,
-    address _LayerrXYZ,
-    bool subscribeOpensea
-  ) external;
-}
+import "./interfaces/ILayerrToken.sol";
 
 contract LayerrFactory is Ownable {
+  struct ContractImplementation {
+    address implementationAddress;
+    bool active;
+  }
 
-  address public implementation1155;
-  address public implementation721;
+  error InactiveImplementation();
 
   address public LayerrXYZ;
 
   mapping(address => address[]) public allClones;
   mapping(string => address) public projectIdToAddress;
+  mapping(uint256 => ContractImplementation) public contractImplementations;
 
-  function setImplementation(address _implementation, uint contractType) external onlyOwner {
-    if (contractType == 1155) {
-      implementation1155 = _implementation;
-    } else if (contractType == 721) {
-      implementation721 = _implementation;
-    }
+  function setImplementation(uint256 implementationId, address _implementation, bool active) external onlyOwner {
+    ContractImplementation storage contractImplementation = contractImplementations[implementationId];
+    contractImplementation.implementationAddress = _implementation;
+    contractImplementation.active = active;
   }
 
   function setLayerrXYZ(address _LayerrXYZ) external onlyOwner {
@@ -65,52 +44,14 @@ contract LayerrFactory is Ownable {
     require(instance != address(0), "ERC1167: create failed");
   }
 
-  function _clone1155(
-    string memory _name,
-    string memory _symbol,
-    string memory _contractURI,
-    uint96 pct,
-    address royaltyReciever,
-    string memory projectId,
-    bool subscribeOpensea
-  ) external {
+  function deployContract(string calldata projectId, uint256 implementationId, bytes calldata data) external {
+    ContractImplementation storage contractImplementation = contractImplementations[implementationId];
+    if(!contractImplementation.active) { revert InactiveImplementation(); }
 
-    address identicalChild = clone(implementation1155);
+    address identicalChild = clone(contractImplementation.implementationAddress);
     allClones[msg.sender].push(identicalChild);
     projectIdToAddress[projectId] = identicalChild;
-    ILayerr1155(identicalChild).initialize(
-      _name,
-      _symbol,
-      _contractURI,
-      pct,
-      royaltyReciever,
-      LayerrXYZ,
-      subscribeOpensea
-    );
-  }
-
-  function _clone721(
-    string memory _name,
-    string memory _symbol,
-    string memory _contractURI,
-    uint96 pct,
-    address royaltyReciever,
-    string memory projectId,
-    bool subscribeOpensea
-  ) external {
-
-    address identicalChild = clone(implementation721);
-    allClones[msg.sender].push(identicalChild);
-    projectIdToAddress[projectId] = identicalChild;
-    ILayerr721(identicalChild).initialize(
-      _name,
-      _symbol,
-      _contractURI,
-      pct,
-      royaltyReciever,
-      LayerrXYZ,
-      subscribeOpensea
-    );
+    ILayerrToken(identicalChild).initialize(data, LayerrXYZ);
   }
 
   function returnClones(address _owner) external view returns (address[] memory){

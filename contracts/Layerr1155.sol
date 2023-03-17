@@ -5,26 +5,27 @@ import { ERC1155 } from "./ERC1155.sol";
 import "@openzeppelin/contracts/token/common/ERC2981.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "operator-filter-registry/src/DefaultOperatorFilterer.sol";
+import "./interfaces/ILayerrToken.sol";
+import "./interfaces/ILayerrVariables.sol";
 
-interface ILayerrVariables {
-  function viewWithdraw() view external returns(address);
-  function viewFee(address _address) view external returns(uint);
-  function viewFlatFee(address _address) view external returns(uint);
-}
 
-contract Layerr1155 is DefaultOperatorFilterer, Initializable, ERC1155, ERC2981 {
+contract Layerr1155 is DefaultOperatorFilterer, Initializable, ERC1155, ERC2981, ILayerrToken {
+  struct Details {
+      uint72 price;
+      uint32 saleStarts;
+      uint32 saleEnds;
+      uint24 editionCounts;
+      uint24 maxMintsPerTx;
+      uint24 tokenEditionMints;
+      bool isClaim;
+  }
+
   mapping(uint => string) public URIs;
-  mapping(uint => uint) public tokenPrices;
-  mapping(uint => uint) public tokenSaleStarts;
-  mapping(uint => uint) public tokenSaleEnds;
-  mapping(uint => uint) public tokenEditionCounts;
-  mapping(uint => uint) public tokenEditionMints;
-  mapping(uint => uint) public maxMintsPerTx;
+  mapping(uint => Details) public tokenDetails;
   mapping(uint => uint[]) public requiredBurnIds;
-  mapping(uint => uint[]) public requiredBurnAmounts;
-  mapping(uint => bool) public isClaim;
+  mapping(uint => uint256[]) public requiredBurnAmounts;
   mapping(uint => uint[]) public requiredClaimIds;
-  mapping(uint => uint[]) public requiredClaimAmounts;
+  mapping(uint => uint256[]) public requiredClaimAmounts;
 
   address public owner;
   address public LayerrXYZ;
@@ -46,86 +47,113 @@ contract Layerr1155 is DefaultOperatorFilterer, Initializable, ERC1155, ERC2981 
     return contractURI_;
   }
 
-
-  function mint(uint _id, uint _amount) public payable {
-    require(!isClaim[_id], "This token is a claim");
-    require(block.timestamp >= tokenSaleStarts[_id], "Sale has not started");
-    require(block.timestamp <= tokenSaleEnds[_id], "Sale has ended");
-    require(tokenEditionMints[_id] + _amount <= tokenEditionCounts[_id], "Not enough editions left");
+  function mint(uint _id, uint256 _amount) public payable {
+    Details storage _details = tokenDetails[_id];
+    require(!_details.isClaim && block.timestamp >= _details.saleStarts && block.timestamp <= _details.saleEnds, "This token is a claim");
+    require(_details.tokenEditionMints + uint24(_amount) <= _details.editionCounts, "Not enough editions left");
 
     uint flatTotal = viewFlatFee() * _amount;
-    uint totalPrice = tokenPrices[_id] * _amount;
+    uint totalPrice = _details.price * _amount;
     require(totalPrice + flatTotal <= msg.value, "Incorrect amount sent");
-    require(_amount <= maxMintsPerTx[_id], "Exceeds max mints per tx");
+    require(_amount <= _details.maxMintsPerTx, "Exceeds max mints per tx");
 
     if (totalPrice > 0) {
-      payable(owner).transfer(totalPrice * (100 - viewFee()) / 100);
+      payable(owner).transfer(totalPrice * (1000 - viewFee()) / 1000);
     }
 
     if (requiredBurnIds[_id].length > 1) {
-      uint[] memory burnAmounts = new uint[](requiredBurnAmounts[_id].length);
-      for (uint i = 0; i < requiredBurnAmounts[_id].length; i++) {
+      uint256[] memory burnAmounts = new uint256[](requiredBurnAmounts[_id].length);
+      for (uint i = 0; i < requiredBurnAmounts[_id].length;) {
         burnAmounts[i] = requiredBurnAmounts[_id][i] * _amount;
+        unchecked { i++; }
       }
       _batchBurn(msg.sender, requiredBurnIds[_id], burnAmounts);
     } else if (requiredBurnIds[_id].length == 1) {
       _burn(msg.sender, requiredBurnIds[_id][0], requiredBurnAmounts[_id][0] * _amount);
     }
 
-    tokenEditionMints[_id] += _amount;
+    _details.tokenEditionMints += uint24(_amount);
     _mint(msg.sender, _id, _amount, "");
   }
 
-  function batchMint(uint[] memory _ids, uint[] memory _amounts) public payable {
+  function batchMint(uint[] memory _ids, uint256[] memory _amounts) public payable {
     require(_ids.length == _amounts.length, "ERROR");
     uint totalCost;
     uint totalFees;
-    for (uint i = 0; i < _ids.length; i++) {
+    for (uint i = 0; i < _ids.length;) {
       uint id = _ids[i];
-      uint amount = _amounts[i];
-      require(!isClaim[id], "This token is a claim");
-      require(block.timestamp >= tokenSaleStarts[id], "Sale has not started");
-      require(block.timestamp <= tokenSaleEnds[id], "Sale has ended");
-      require(tokenEditionMints[id] + amount <= tokenEditionCounts[id], "Not enough editions left");
-      require(amount <= maxMintsPerTx[id], "Exceeds max mints per tx");
-      totalCost += tokenPrices[id] * amount;
+      uint256 amount = _amounts[i];
+      Details memory _details = tokenDetails[id];
+      require(!_details.isClaim && block.timestamp >= _details.saleStarts && block.timestamp <= _details.saleEnds, "This token is a claim");
+      require(_details.tokenEditionMints + amount <= _details.editionCounts, "Not enough editions left");
+      require(amount <= _details.maxMintsPerTx, "Exceeds max mints per tx");
+      totalCost += _details.price * amount;
       totalFees += viewFlatFee() * amount;
-      tokenEditionMints[id] += amount;
+      _details.tokenEditionMints += uint24(amount);
+      tokenDetails[id] = _details;
 
       if (requiredBurnIds[id].length > 1) {
-        uint[] memory burnAmounts = new uint[](requiredBurnAmounts[id].length);
-        for (uint j = 0; j < requiredBurnAmounts[id].length; j++) {
+        uint256[] memory burnAmounts = new uint256[](requiredBurnAmounts[id].length);
+        for (uint j = 0; j < requiredBurnAmounts[id].length;) {
           burnAmounts[j] = requiredBurnAmounts[id][j] * amount;
+          unchecked {
+            j++;
+          }
         }
         _batchBurn(msg.sender, requiredBurnIds[id], burnAmounts);
       } else if (requiredBurnIds[id].length == 1) {
         _burn(msg.sender, requiredBurnIds[id][0], requiredBurnAmounts[id][0] * amount);
       }
+
+      unchecked {
+        i++;
+      }
     }
+
     require(totalCost + totalFees <= msg.value, "Incorrect amount sent");
-    payable(owner).transfer(totalCost * (100 - viewFee()) / 100);
+    payable(owner).transfer(totalCost * (1000 - viewFee()) / 1000);
     _batchMint(msg.sender, _ids, _amounts, "");
   }
 
-  function mintAndClaim(uint _id, uint _amount) public payable {
-    require(isClaim[_id], "Not a claimable token");
-    require(block.timestamp >= tokenSaleStarts[_id], "Sale has not started");
-    require(block.timestamp <= tokenSaleEnds[_id], "Sale has ended");
-    require(tokenEditionMints[_id] + _amount <= tokenEditionCounts[_id], "Not enough editions left");
+  function mintAndClaim(uint _id, uint256 _amount) public payable {
+    Details storage _details = tokenDetails[_id];
+    require(_details.isClaim && block.timestamp >= _details.saleStarts && block.timestamp <= _details.saleEnds, "Sale is not active for this token");
+    require(_details.tokenEditionMints + _amount <= _details.editionCounts, "Not enough editions left");
+
+    _details.tokenEditionMints += uint24(_amount);
 
     if (_amount > 1) {
-      uint[] memory claimAmounts = new uint[](requiredClaimAmounts[_id].length);
-      for (uint i = 0; i < requiredClaimAmounts[_id].length; i++) {
+      uint256[] memory claimAmounts = new uint256[](requiredClaimAmounts[_id].length);
+      for (uint i = 0; i < requiredClaimAmounts[_id].length;) {
         claimAmounts[i] = requiredClaimAmounts[_id][i] * _amount;
+        unchecked {
+          i++;
+        }
       }
       batchMint(requiredClaimIds[_id], claimAmounts);
     } else {
       batchMint(requiredClaimIds[_id], requiredClaimAmounts[_id]);
     }
 
-    require(viewFlatFee() * _amount <= msg.value, "Incorrect amount sent");
+    _mint(msg.sender, _id, _amount, "");
+  }
 
-    tokenEditionMints[_id] += _amount;
+  function claim(uint _id, uint256 _amount) public payable {
+    Details storage _details = tokenDetails[_id];
+    require(_details.isClaim && block.timestamp >= _details.saleStarts && block.timestamp <= _details.saleEnds, "Sale is not active for this token");
+    require(_details.tokenEditionMints + _amount <= _details.editionCounts, "Not enough editions left");
+    require(viewFlatFee() * _amount <= msg.value, "Incorrect amount sent");
+    uint[] memory requiredIds = requiredClaimIds[_id];
+    uint[] memory requiredAmounts = requiredClaimAmounts[_id];
+    for (uint i = 0; i < requiredClaimIds[_id].length;) {
+      require(balanceOf[msg.sender][requiredIds[i]] >= requiredAmounts[i] * _amount, "Not enough required tokens");
+      unchecked {
+        i++;
+      }
+    }
+    _details.tokenEditionMints += uint24(_amount);
+
+
     _mint(msg.sender, _id, _amount, "");
   }
 
@@ -136,21 +164,26 @@ contract Layerr1155 is DefaultOperatorFilterer, Initializable, ERC1155, ERC2981 
     contractURI_ = _contractURI;
   }
 
+  function ownerMint(uint _id, uint256 _amount, address _to) public onlyOwner {
+    Details storage _details = tokenDetails[_id];
+    require(_details.tokenEditionMints + _amount <= _details.editionCounts, "Not enough editions left");
+    _details.tokenEditionMints += uint24(_amount);
+    _mint(_to, _id, _amount, "");
+  }
+
   function initialize (
-    string memory _name,
-    string memory _symbol,
-    string memory _contractURI,
-    uint96 pct,
-    address royaltyReciever,
-    address _LayerrXYZ,
-    bool subscribeOpensea
+    bytes calldata data,
+    address _LayerrXYZ
   ) public initializer {
+    uint96 pct;
+    address royaltyReciever;
+    bool subscribeOpensea;
+
     owner = tx.origin;
-    name = _name;
-    symbol = _symbol;
-    contractURI_ = _contractURI;
-    _setDefaultRoyalty(royaltyReciever, pct);
     LayerrXYZ = _LayerrXYZ;
+    (name, symbol, contractURI_, pct, royaltyReciever, subscribeOpensea) = abi.decode(data, (string, string, string, uint96, address, bool));
+
+    _setDefaultRoyalty(royaltyReciever, pct);
 
     if (subscribeOpensea) {
       OperatorFilterer.OPERATOR_FILTER_REGISTRY.registerAndSubscribe(address(this), address(0x3cc6CddA760b79bAfa08dF41ECFA224f810dCeB6));
@@ -160,23 +193,28 @@ contract Layerr1155 is DefaultOperatorFilterer, Initializable, ERC1155, ERC2981 
   function addToken(
     uint _id,
     string memory _uri,
-    uint _price,
-    uint _saleStart,
-    uint _saleEnd,
-    uint _editionCount,
-    uint _maxMintsPerTx,
+    uint72 _price,
+    uint32 _saleStart,
+    uint32 _saleEnd,
+    uint24 _editionCount,
+    uint24 _maxMintsPerTx,
     uint[] memory _requiredBurnIds,
-    uint[] memory _requiredBurnAmounts,
+    uint256[] memory _requiredBurnAmounts,
     bool _isClaim,
     uint[] memory _requiredClaimIds,
-    uint[] memory _requiredClaimAmounts
+    uint256[] memory _requiredClaimAmounts
   ) public onlyOwner {
     URIs[_id] = _uri;
-    tokenPrices[_id] = _price;
-    tokenSaleStarts[_id] = _saleStart;
-    tokenSaleEnds[_id] = _saleEnd;
-    tokenEditionCounts[_id] = _editionCount;
-    maxMintsPerTx[_id] = _maxMintsPerTx;
+
+    Details memory _details;
+    _details.price = _price;
+    _details.saleStarts = _saleStart;
+    _details.saleEnds = _saleEnd;
+    _details.editionCounts = _editionCount;
+    _details.maxMintsPerTx = _maxMintsPerTx;
+    _details.tokenEditionMints = 0;
+    _details.isClaim = _isClaim;
+    tokenDetails[_id] = _details;
 
     if (_requiredBurnIds.length > 0) {
       requiredBurnIds[_id] = _requiredBurnIds;
@@ -184,15 +222,50 @@ contract Layerr1155 is DefaultOperatorFilterer, Initializable, ERC1155, ERC2981 
     }
 
     if (_isClaim) {
-      isClaim[_id] = true;
       requiredClaimIds[_id] = _requiredClaimIds;
       requiredClaimAmounts[_id] = _requiredClaimAmounts;
     }
   }
 
-  function modifySalePeriod(uint _id, uint _saleStart, uint _saleEnd) public onlyOwner {
-    tokenSaleStarts[_id] = _saleStart;
-    tokenSaleEnds[_id] = _saleEnd;
+  function addTokenBatch (
+    uint[] memory _ids,
+    string[] memory _uris,
+    uint72[] memory _prices,
+    uint32[] memory _saleStarts,
+    uint32[] memory _saleEnds,
+    uint24[] memory _editionCounts,
+    uint24[] memory _maxMintsPerTx,
+    uint[][] memory _requiredBurnIds,
+    uint256[][] memory _requiredBurnAmounts,
+    bool[] memory _isClaim,
+    uint[][] memory _requiredClaimIds,
+    uint256[][] memory _requiredClaimAmounts
+  ) public onlyOwner {
+    for (uint i = 0; i < _ids.length;) {
+      addToken(
+        _ids[i],
+        _uris[i],
+        _prices[i],
+        _saleStarts[i],
+        _saleEnds[i],
+        _editionCounts[i],
+        _maxMintsPerTx[i],
+        _requiredBurnIds[i],
+        _requiredBurnAmounts[i],
+        _isClaim[i],
+        _requiredClaimIds[i],
+        _requiredClaimAmounts[i]
+      );
+      unchecked {
+        i++;
+      }
+    }
+  }
+
+  function modifySalePeriod(uint _id, uint32 _saleStart, uint32 _saleEnd) public onlyOwner {
+    Details storage _details = tokenDetails[_id];
+    _details.saleStarts = _saleStart;
+    _details.saleEnds = _saleEnd;
   }
 
   function editContract (address receiver, uint96 feeNumerator, string memory _name, string memory _symbol) external onlyOwner {
@@ -201,19 +274,16 @@ contract Layerr1155 is DefaultOperatorFilterer, Initializable, ERC1155, ERC2981 
     symbol = _symbol;
   }
 
-  function viewWithdraw() public view returns (address) {
-    address returnWallet = ILayerrVariables(LayerrXYZ).viewWithdraw();
-    return returnWallet;
+  function viewWithdraw() public view returns (address returnWallet) {
+    returnWallet = ILayerrVariables(LayerrXYZ).viewWithdraw();
   }
 
-  function viewFee() public view returns (uint) {
-    uint returnFee = ILayerrVariables(LayerrXYZ).viewFee(address(this));
-    return returnFee;
+  function viewFee() public view returns (uint returnFee) {
+    returnFee = ILayerrVariables(LayerrXYZ).viewFee(address(this));
   }
 
-  function viewFlatFee() public view returns (uint) {
-    uint returnFee = ILayerrVariables(LayerrXYZ).viewFlatFee(address(this));
-    return returnFee;
+  function viewFlatFee() public view returns (uint returnFee) {
+    returnFee = ILayerrVariables(LayerrXYZ).viewFlatFee(address(this));
   }
 
   function withdraw() public {

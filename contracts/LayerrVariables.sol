@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.0 <0.9.0;
 
-contract LayerrVariables {
+import "./interfaces/ILayerrVariables.sol";
+
+contract LayerrVariables is ILayerrVariables {
   struct Fee {
     bool isSet;
     uint amount;
@@ -29,14 +31,14 @@ contract LayerrVariables {
     return(withdrawAddress);
   }
 
-function viewFee(address _address) view external returns(uint)
-{
-  if (specificFee[_address].isSet) {
-    return specificFee[_address].amount;
-  } else {
-    return fee;
+  function viewFee(address _address) view external returns(uint)
+  {
+    if (specificFee[_address].isSet) {
+      return specificFee[_address].amount;
+    } else {
+      return fee;
+    }
   }
-}
 
   function viewFlatFee(address _address) view external returns(uint)
   {

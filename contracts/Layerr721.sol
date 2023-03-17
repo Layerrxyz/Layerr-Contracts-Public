@@ -6,20 +6,19 @@ import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/token/common/ERC2981.sol";
 import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import "operator-filter-registry/src/DefaultOperatorFilterer.sol";
+import "./interfaces/ILayerrToken.sol";
+import "./interfaces/ILayerrVariables.sol";
 
-interface ILayerrVariables {
-  function viewWithdraw() view external returns(address);
-  function viewFee(address _address) view external returns(uint);
-  function viewFlatFee(address _address) view external returns(uint);
-}
 
-contract Layerr721 is DefaultOperatorFilterer, Initializable, ERC721, ERC2981 {
+contract Layerr721 is DefaultOperatorFilterer, Initializable, ERC721, ERC2981, ILayerrToken {
+  struct Details {
+      uint72 price;
+      uint32 saleStarts;
+      uint32 saleEnds;
+  }
+
   mapping(uint => string) public URIs;
-  mapping(uint => uint) public tokenPrices;
-  mapping(uint => uint) public tokenSaleStarts;
-  mapping(uint => uint) public tokenSaleEnds;
-  mapping(uint => bool) public isAuction;
-
+  mapping(uint => Details) public tokenDetails;
 
   address public owner;
   address public LayerrXYZ;
@@ -34,11 +33,11 @@ contract Layerr721 is DefaultOperatorFilterer, Initializable, ERC721, ERC2981 {
   }
 
   function mintFixedPrice(uint _id) public payable {
-    require(block.timestamp >= tokenSaleStarts[_id], "Sale has not started");
-    require(block.timestamp <= tokenSaleEnds[_id], "Sale has ended");
-    require(tokenPrices[_id] + viewFlatFee() <= msg.value, "Incorrect amount sent");
+    Details storage _details = tokenDetails[_id];
+    require(block.timestamp >= _details.saleStarts && block.timestamp <= _details.saleEnds, "Sale is not active for this token");
+    require(_details.price + viewFlatFee() <= msg.value, "Incorrect amount sent");
     
-    payable(owner).transfer(tokenPrices[_id] * (100 - viewFee()) / 100);
+    payable(owner).transfer(_details.price * (1000 - viewFee()) / 1000);
 
     _mint(msg.sender, _id);
   }
@@ -50,21 +49,23 @@ contract Layerr721 is DefaultOperatorFilterer, Initializable, ERC721, ERC2981 {
     contractURI_ = _contractURI;
   }
 
+  function ownerMint(uint _id, address _to) public onlyOwner {
+    _mint(_to, _id);
+  }
+
   function initialize (
-    string memory _name,
-    string memory _symbol,
-    string memory _contractURI,
-    uint96 pct,
-    address royaltyReciever,
-    address _LayerrXYZ,
-    bool subscribeOpensea
+    bytes calldata data,
+    address _LayerrXYZ
   ) public initializer {
+    uint96 pct;
+    address royaltyReciever;
+    bool subscribeOpensea;
+
     owner = tx.origin;
-    name = _name;
-    symbol = _symbol;
-    contractURI_ = _contractURI;
-    _setDefaultRoyalty(royaltyReciever, pct);
     LayerrXYZ = _LayerrXYZ;
+    (name, symbol, contractURI_, pct, royaltyReciever, subscribeOpensea) = abi.decode(data, (string, string, string, uint96, address, bool));
+
+    _setDefaultRoyalty(royaltyReciever, pct);
 
     if (subscribeOpensea) {
       OperatorFilterer.OPERATOR_FILTER_REGISTRY.registerAndSubscribe(address(this), address(0x3cc6CddA760b79bAfa08dF41ECFA224f810dCeB6));
@@ -74,19 +75,34 @@ contract Layerr721 is DefaultOperatorFilterer, Initializable, ERC721, ERC2981 {
   function addToken(
     uint _id,
     string memory _uri,
-    uint _price,
-    uint _saleStart,
-    uint _saleEnd
+    uint72 _price,
+    uint32 _saleStart,
+    uint32 _saleEnd
   ) public onlyOwner {
     URIs[_id] = _uri;
-    tokenPrices[_id] = _price;
-    tokenSaleStarts[_id] = _saleStart;
-    tokenSaleEnds[_id] = _saleEnd;
+    Details memory details;
+    details.price = _price;
+    details.saleStarts = _saleStart;
+    details.saleEnds = _saleEnd;
+    tokenDetails[_id] = details;
   }
 
-  function modifySalePeriod(uint _id, uint _saleStart, uint _saleEnd) public onlyOwner {
-    tokenSaleStarts[_id] = _saleStart;
-    tokenSaleEnds[_id] = _saleEnd;
+  function addTokenBatch (
+    uint[] memory _ids,
+    string[] memory _uris,
+    uint72[] memory _prices,
+    uint32[] memory _saleStarts,
+    uint32[] memory _saleEnds
+  ) public onlyOwner {
+    for (uint i = 0; i < _ids.length; i++) {
+      addToken(_ids[i], _uris[i], _prices[i], _saleStarts[i], _saleEnds[i]);
+    }
+  }
+
+  function modifySalePeriod(uint _id, uint32 _saleStart, uint32 _saleEnd) public onlyOwner {
+    Details storage _details = tokenDetails[_id];
+    _details.saleStarts = _saleStart;
+    _details.saleEnds = _saleEnd;
   }
 
 
@@ -97,26 +113,20 @@ contract Layerr721 is DefaultOperatorFilterer, Initializable, ERC721, ERC2981 {
     symbol = _symbol;
   }
 
-  function viewWithdraw() public view returns (address) {
-    address returnWallet = ILayerrVariables(LayerrXYZ).viewWithdraw();
-    return returnWallet;
+  function viewWithdraw() public view returns (address returnWallet) {
+    returnWallet = ILayerrVariables(LayerrXYZ).viewWithdraw();
   }
 
-  function viewFee() public view returns (uint) {
-    uint returnFee = ILayerrVariables(LayerrXYZ).viewFee(address(this));
-    return returnFee;
+  function viewFee() public view returns (uint returnFee) {
+    returnFee = ILayerrVariables(LayerrXYZ).viewFee(address(this));
   }
 
-  function viewFlatFee() public view returns (uint) {
-    uint returnFee = ILayerrVariables(LayerrXYZ).viewFlatFee(address(this));
-    return returnFee;
+  function viewFlatFee() public view returns (uint returnFee) {
+    returnFee = ILayerrVariables(LayerrXYZ).viewFlatFee(address(this));
   }
 
   function withdraw() public {
     require(msg.sender == owner || msg.sender == viewWithdraw(), "Not owner or Layerr");
-    require(msg.sender == tx.origin, "Cannot withdraw from a contract");
-    uint256 contractBalance = address(this).balance;
-
     payable(viewWithdraw()).transfer(address(this).balance);
   }
 
